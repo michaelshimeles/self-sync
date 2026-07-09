@@ -1,7 +1,7 @@
 {
 	"name": "Self Sync",
 	"short_name": "Self Sync",
-	"description": "A local-first sync framework for SvelteKit and Effect.",
+	"description": "A local-first sync engine for SvelteKit and Effect.",
 	"start_url": "/",
 	"display": "standalone",
 	"background_color": "#f8fafc",

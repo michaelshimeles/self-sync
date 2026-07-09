@@ -1,85 +1,84 @@
 # Self Sync
 
-Self Sync is a fast local-first sync framework built with SvelteKit, Effect, IndexedDB, WebSockets, and SQL-backed storage.
+Self Sync is a local-first sync engine for SvelteKit and Effect. It keeps the UI reactive from IndexedDB, writes offline-first through an outbox, syncs to SQL storage, and uses WebSockets to wake up other clients as changes land.
 
-This repository is a rewrite of the original React/Hono demo into a focused sync-engine app with:
+Live app: https://sveltekit-effect-local-first-sync.vercel.app
 
-- SvelteKit 2 / Svelte 5
+## What This Proves
+
+- A SvelteKit app can feel instant because reads and writes hit local IndexedDB first.
+- Chat and kanban views can share the same local-first records and stay reactive through Dexie `liveQuery`.
+- Creates, edits, and deletes work offline, queue locally, and converge after reconnect.
+- Server sync can stay deterministic with Effect Schema validation, idempotent mutation IDs, revisions, timestamps, and delete tombstones.
+- Realtime can stay simple: WebSockets only send invalidations, then every client pulls through the same sync endpoint.
+- Postgres and MySQL can use the same sync contract, with memory storage available for zero-config local development.
+
+## Stack
+
+- SvelteKit 2 and Svelte 5
 - Effect for request validation and server-side sync programs
-- Dexie / IndexedDB as the reactive local source of truth
+- Dexie and IndexedDB as the reactive local source of truth
+- WebSockets for low-latency cross-client invalidation
 - Postgres or MySQL storage adapters
-- WebSocket invalidation for low-latency cross-tab and cross-client sync
-- Memory storage fallback for zero-config local development
+- Vercel Fluid Compute for production WebSocket support
 
-## What it does
-
-- Writes to IndexedDB first so the UI updates immediately.
-- Uses an outbox to batch create, edit, and delete mutations.
-- Syncs in the background, on reconnect, through a manual sync button, and when realtime invalidations arrive.
-- Validates sync requests with Effect Schema before touching storage.
-- Supports Postgres and MySQL with the same server-side sync contract.
-- Resolves stale writes deterministically with `updatedAt`, `revision`, and idempotent mutation IDs.
-- Keeps deletes local-first by writing tombstones to IndexedDB, syncing them immediately, and merging server tombstones back into the local database.
-
-## Run
+## Run Locally
 
 ```sh
 npm install
 npm run dev
 ```
 
-Open the local URL printed by Vite. The app runs without a database by default.
+Open the local URL printed by Vite. No database is required for local development; the server falls back to an in-memory store.
 
-## Database
+## Configure SQL
 
-The app works without a database by using an in-memory server store. For durable sync, set `DATABASE_URL`.
+Set `DATABASE_URL` to make sync durable.
 
 Postgres:
 
 ```sh
 DATABASE_DRIVER=postgres
-DATABASE_URL=postgres://user:password@localhost:5432/local_first
+DATABASE_URL=postgres://user:password@localhost:5432/self_sync
 ```
 
 MySQL:
 
 ```sh
 DATABASE_DRIVER=mysql
-DATABASE_URL=mysql://user:password@localhost:3306/local_first
+DATABASE_URL=mysql://user:password@localhost:3306/self_sync
 ```
 
-The server creates the `sync_items` table automatically on first use. The raw SQL is also available in:
+The server creates the `sync_items` table automatically on first use. The raw schema files are also available in:
 
 - `src/lib/server/sql/schema.postgres.sql`
 - `src/lib/server/sql/schema.mysql.sql`
 
-## Realtime sync
+## Realtime
 
-The app keeps IndexedDB as the render source and uses WebSockets as an invalidation channel. When `POST /api/sync` applies a create, update, or delete, the server publishes a `sync_changed` message. Connected clients that did not originate the change immediately run `syncNow('realtime')` and merge the authoritative server snapshot into Dexie.
+The app keeps IndexedDB as the render source and uses WebSockets as an invalidation channel. When `POST /api/sync` applies a create, update, or delete, the server publishes `sync_changed`. Connected clients that did not originate the change immediately run `syncNow('realtime')` and merge the authoritative server state into Dexie.
 
-Local development uses a Vite WebSocket plugin at:
+Local development uses the Vite WebSocket plugin:
 
 ```text
 ws://localhost:5173/api/realtime
 ```
 
-Production on Vercel uses the Node function in `api/realtime.ts`:
+Production uses the Vercel function:
 
 ```text
-wss://your-domain.com/api/realtime
+wss://sveltekit-effect-local-first-sync.vercel.app/api/realtime
 ```
 
-For Postgres deployments, the realtime broker uses Postgres `LISTEN/NOTIFY` so WebSocket clients connected to different function instances still receive invalidations. Use an unpooled connection string for listening when your provider supplies one:
+For Postgres deployments, the realtime broker uses `LISTEN/NOTIFY` so clients connected to different function instances still receive invalidations. Use an unpooled connection string for listening when your provider supplies one:
 
 ```sh
-DATABASE_URL_UNPOOLED=postgres://user:password@host:5432/local_first
+DATABASE_URL_UNPOOLED=postgres://user:password@host:5432/self_sync
 # or
-POSTGRES_URL_NON_POOLING=postgres://user:password@host:5432/local_first
+POSTGRES_URL_NON_POOLING=postgres://user:password@host:5432/self_sync
 ```
 
-MySQL still syncs correctly through the local-first outbox and background pull loop. Cross-instance realtime for MySQL should use an external pub/sub service such as Redis, Ably, Pusher, or a MySQL binlog-based bridge.
-
-On Vercel, WebSockets require Fluid Compute. New projects have it enabled by default, but older projects may need it enabled in project settings.
+MySQL sync still works through the outbox and background pull loop. Cross-instance realtime for MySQL should use an external pub/sub service such as Redis, Ably, Pusher, or a binlog-backed bridge.
 
 ## API
 
@@ -88,10 +87,20 @@ On Vercel, WebSockets require Fluid Compute. New projects have it enabled by def
 - `GET /api/health` reports the active storage mode.
 - `GET /api/realtime` upgrades to a WebSocket connection for realtime sync invalidations.
 
-## Architecture
+## Sync Model
 
-Local writes go to IndexedDB first and enqueue a single latest mutation per item in the outbox. The UI renders from Dexie `liveQuery`, so creates, edits, and deletes update immediately without waiting for the network.
+Local writes update IndexedDB first and enqueue a latest mutation per item in the outbox. The UI renders from Dexie `liveQuery`, so creates, edits, and deletes appear immediately without waiting for the network.
 
 `POST /api/sync` runs an Effect program that validates the request, applies queued mutations through the selected storage adapter, and returns the authoritative server state. The client merges that response back into IndexedDB and clears completed outbox mutations.
 
-Conflict handling is deterministic: newer `updatedAt` wins, stale mutations are marked as reconciled, and mutation IDs make retries idempotent. WebSockets do not carry item payloads; they only wake clients up so every device converges through the same sync endpoint.
+Conflict handling is deterministic: newer `updatedAt` wins, stale mutations are reconciled, and mutation IDs make retries idempotent. Deletes are tombstones, not hard local removals, so offline deletes sync correctly and other clients converge through the same merge path.
+
+## Vercel Notes
+
+The production deployment uses Vercel Fluid Compute for WebSockets. New Vercel projects have Fluid Compute enabled by default; older projects may need it enabled in project settings.
+
+The public production domain is:
+
+```text
+https://sveltekit-effect-local-first-sync.vercel.app
+```

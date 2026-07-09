@@ -1,6 +1,6 @@
 {
 	"name": "self-sync",
-	"description": "Self Sync: a local-first sync framework for SvelteKit and Effect with Postgres/MySQL adapters.",
+	"description": "A local-first sync engine for SvelteKit and Effect with reactive IndexedDB state, WebSockets, and Postgres/MySQL adapters.",
 	"private": true,
 	"version": "0.0.1",
 	"type": "module",
