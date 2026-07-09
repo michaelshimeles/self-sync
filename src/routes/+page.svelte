@@ -88,18 +88,14 @@
 	}
 </script>
 
-<svelte:head>
-	<title>Local-first sync engine</title>
-</svelte:head>
-
 <div class="min-h-dvh bg-zinc-50">
 	<header class="border-b border-zinc-200 bg-white">
 		<div class="mx-auto flex max-w-7xl flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
 			<div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
 				<div>
-					<p class="text-sm font-medium text-emerald-700">SvelteKit + Effect</p>
+					<p class="text-sm font-medium text-emerald-700">SvelteKit + Effect + Local-first</p>
 					<h1 class="text-balance text-2xl font-semibold text-zinc-950 sm:text-3xl">
-						Local-first sync engine
+						Self Sync
 					</h1>
 				</div>
 

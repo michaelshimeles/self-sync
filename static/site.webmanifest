@@ -1,0 +1,21 @@
+{
+	"name": "Self Sync",
+	"short_name": "Self Sync",
+	"description": "A local-first sync framework for SvelteKit and Effect.",
+	"start_url": "/",
+	"display": "standalone",
+	"background_color": "#f8fafc",
+	"theme_color": "#0f172a",
+	"icons": [
+		{
+			"src": "/apple-touch-icon.png",
+			"sizes": "180x180",
+			"type": "image/png"
+		},
+		{
+			"src": "/icon-512.png",
+			"sizes": "512x512",
+			"type": "image/png"
+		}
+	]
+}

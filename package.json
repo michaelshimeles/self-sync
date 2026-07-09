@@ -1,6 +1,6 @@
 {
-	"name": "sveltekit-effect-local-first-sync",
-	"description": "A fast local-first SvelteKit app with an Effect-powered sync engine and Postgres/MySQL adapters.",
+	"name": "self-sync",
+	"description": "Self Sync: a local-first sync framework for SvelteKit and Effect with Postgres/MySQL adapters.",
 	"private": true,
 	"version": "0.0.1",
 	"type": "module",

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+	<title id="title">Self Sync</title>
+	<desc id="desc">A Self Sync monogram with connected local-first sync nodes.</desc>
+	<rect width="64" height="64" rx="14" fill="#0f172a" />
+	<path d="M18 23h16c5.5 0 10 4.5 10 10s-4.5 10-10 10H20" fill="none" stroke="#34d399" stroke-width="6" stroke-linecap="round" />
+	<path d="M46 21H30c-5.5 0-10 4.5-10 10s4.5 10 10 10h14" fill="none" stroke="#38bdf8" stroke-width="6" stroke-linecap="round" opacity=".9" />
+	<circle cx="18" cy="23" r="4" fill="#ecfeff" />
+	<circle cx="46" cy="21" r="4" fill="#ecfeff" />
+	<circle cx="20" cy="43" r="4" fill="#ecfeff" />
+	<circle cx="44" cy="41" r="4" fill="#ecfeff" />
+</svg>

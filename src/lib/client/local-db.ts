@@ -7,7 +7,7 @@ class LocalFirstDatabase extends Dexie {
 	meta!: Table<MetaRecord, string>;
 
 	constructor() {
-		super('sveltekit-effect-local-first');
+		super('self-sync');
 
 		this.version(1).stores({
 			items: 'id, syncStatus, updatedAt, deletedAt, revision',

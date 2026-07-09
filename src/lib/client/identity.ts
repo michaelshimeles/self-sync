@@ -1,6 +1,6 @@
 import { browser } from '$app/environment';
 
-const CLIENT_ID_KEY = 'local-first-sync-client-id';
+const CLIENT_ID_KEY = 'self-sync-client-id';
 
 export function getClientId() {
 	if (!browser) return 'server';

@@ -436,7 +436,7 @@ class MySqlStorage implements SyncStorage {
 }
 
 const globalStore = globalThis as typeof globalThis & {
-	__sveltekitEffectLocalFirstStore?: Map<string, StoredItem>;
+	__selfSyncStore?: Map<string, StoredItem>;
 };
 
 let storageSingleton: SyncStorage | null = null;
@@ -453,8 +453,8 @@ export function getStorage(): SyncStorage {
 	if (storageSingleton && storageKey === nextKey) return storageSingleton;
 
 	if (!connectionString || driver === 'memory') {
-		globalStore.__sveltekitEffectLocalFirstStore ??= new Map();
-		storageSingleton = new MemoryStorage(globalStore.__sveltekitEffectLocalFirstStore);
+		globalStore.__selfSyncStore ??= new Map();
+		storageSingleton = new MemoryStorage(globalStore.__selfSyncStore);
 		storageKey = nextKey;
 		return storageSingleton;
 	}

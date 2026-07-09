@@ -1,6 +1,6 @@
-# SvelteKit Effect Local-First Sync
+# Self Sync
 
-Fast local-first app starter built with SvelteKit, Effect, IndexedDB, and a SQL-backed sync engine.
+Self Sync is a fast local-first sync framework built with SvelteKit, Effect, IndexedDB, WebSockets, and SQL-backed storage.
 
 This repository is a rewrite of the original React/Hono demo into a focused sync-engine app with:
 
