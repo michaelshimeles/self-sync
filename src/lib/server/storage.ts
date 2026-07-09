@@ -61,6 +61,22 @@ function sortItems(items: ServerItem[]) {
 	return [...items].sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+function normalisePostgresConnectionString(connectionString: string) {
+	try {
+		const url = new URL(connectionString);
+		const sslMode = url.searchParams.get('sslmode')?.toLowerCase();
+
+		if (sslMode === 'prefer' || sslMode === 'require' || sslMode === 'verify-ca') {
+			url.searchParams.set('sslmode', 'verify-full');
+			return url.toString();
+		}
+	} catch {
+		return connectionString;
+	}
+
+	return connectionString;
+}
+
 class MemoryStorage implements SyncStorage {
 	mode: DatabaseMode = 'memory';
 	private store: Map<string, StoredItem>;
@@ -165,7 +181,9 @@ class PostgresStorage implements SyncStorage {
 	private ready = false;
 
 	constructor(connectionString: string) {
-		this.pool = new Pool({ connectionString });
+		this.pool = new Pool({
+			connectionString: normalisePostgresConnectionString(connectionString)
+		});
 	}
 
 	private async ensureSchema() {

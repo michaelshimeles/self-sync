@@ -38,6 +38,22 @@ function isPostgresConnectionString(connectionString: string | undefined): conne
 	return /^postgres(?:ql)?:\/\//i.test(connectionString ?? '');
 }
 
+function normalisePostgresConnectionString(connectionString: string) {
+	try {
+		const url = new URL(connectionString);
+		const sslMode = url.searchParams.get('sslmode')?.toLowerCase();
+
+		if (sslMode === 'prefer' || sslMode === 'require' || sslMode === 'verify-ca') {
+			url.searchParams.set('sslmode', 'verify-full');
+			return url.toString();
+		}
+	} catch {
+		return connectionString;
+	}
+
+	return connectionString;
+}
+
 function parseMessage(payload: string | undefined) {
 	if (!payload) return null;
 
@@ -56,7 +72,7 @@ async function subscribeSyncChanges(listener: RealtimeListener) {
 		return () => {};
 	}
 
-	const client = new Client({ connectionString });
+	const client = new Client({ connectionString: normalisePostgresConnectionString(connectionString) });
 
 	try {
 		await client.connect();
@@ -93,11 +109,16 @@ function ensureSubscribed() {
 		unsubscribePromise = null;
 		return null;
 	});
+
+	return unsubscribePromise;
 }
 
 wss.on('connection', (socket) => {
-	ensureSubscribed();
-	socket.send(JSON.stringify({ type: 'connected', serverTime: Date.now() }));
+	void ensureSubscribed().then(() => {
+		if (socket.readyState === WebSocket.OPEN) {
+			socket.send(JSON.stringify({ type: 'connected', serverTime: Date.now() }));
+		}
+	});
 });
 
 wss.on('close', async () => {

@@ -56,18 +56,37 @@ function isPostgresConnectionString(connectionString: string | undefined): conne
 	return /^postgres(?:ql)?:\/\//i.test(connectionString ?? '');
 }
 
+function normalisePostgresConnectionString(connectionString: string) {
+	try {
+		const url = new URL(connectionString);
+		const sslMode = url.searchParams.get('sslmode')?.toLowerCase();
+
+		if (sslMode === 'prefer' || sslMode === 'require' || sslMode === 'verify-ca') {
+			url.searchParams.set('sslmode', 'verify-full');
+			return url.toString();
+		}
+	} catch {
+		return connectionString;
+	}
+
+	return connectionString;
+}
+
 function getNotifyPool(connectionString: string) {
 	const currentGlobal = getGlobal();
+	const normalisedConnectionString = normalisePostgresConnectionString(connectionString);
 
 	if (
 		currentGlobal.__localFirstRealtimeNotifyPool &&
-		currentGlobal.__localFirstRealtimeNotifyPoolKey === connectionString
+		currentGlobal.__localFirstRealtimeNotifyPoolKey === normalisedConnectionString
 	) {
 		return currentGlobal.__localFirstRealtimeNotifyPool;
 	}
 
-	currentGlobal.__localFirstRealtimeNotifyPool = new Pool({ connectionString });
-	currentGlobal.__localFirstRealtimeNotifyPoolKey = connectionString;
+	currentGlobal.__localFirstRealtimeNotifyPool = new Pool({
+		connectionString: normalisedConnectionString
+	});
+	currentGlobal.__localFirstRealtimeNotifyPoolKey = normalisedConnectionString;
 	return currentGlobal.__localFirstRealtimeNotifyPool;
 }
 
@@ -121,7 +140,7 @@ export async function subscribeSyncChanges(
 		};
 	}
 
-	const client = new Client({ connectionString });
+	const client = new Client({ connectionString: normalisePostgresConnectionString(connectionString) });
 
 	try {
 		await client.connect();
