@@ -35,6 +35,41 @@
 		/>
 		<meta name="twitter:image" content="https://selfs-goshen-labs.vercel.app/og.png" />
 		<meta name="twitter:image:alt" content="Self Sync local-first sync framework preview" />
+		<script>
+			(() => {
+				const reloadKey = 'self-sync:asset-reload-at';
+				const isAssetLoadError = (value) => {
+					const text = String(value?.message ?? value ?? '');
+					return (
+						text.includes('Failed to fetch dynamically imported module') ||
+						text.includes('Importing a module script failed') ||
+						text.includes('/_app/immutable/')
+					);
+				};
+				const reloadOnce = () => {
+					const lastReload = Number(sessionStorage.getItem(reloadKey) ?? 0);
+					if (Date.now() - lastReload < 15000) return;
+
+					sessionStorage.setItem(reloadKey, String(Date.now()));
+					const url = new URL(location.href);
+					url.searchParams.set('__self_sync_reload', String(Date.now()));
+					location.replace(url);
+				};
+
+				window.addEventListener('unhandledrejection', (event) => {
+					if (isAssetLoadError(event.reason)) reloadOnce();
+				});
+				window.addEventListener(
+					'error',
+					(event) => {
+						if (isAssetLoadError(event.message) || isAssetLoadError(event.filename)) {
+							reloadOnce();
+						}
+					},
+					true
+				);
+			})();
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
