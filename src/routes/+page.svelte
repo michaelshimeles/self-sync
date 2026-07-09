@@ -7,6 +7,7 @@
 		Cloud,
 		Columns3,
 		Database,
+		GripVertical,
 		HardDrive,
 		MessageSquare,
 		Plus,
@@ -54,6 +55,8 @@
 	let chatError = $state('');
 	let pendingDelete = $state<LocalItem | null>(null);
 	let deleteDialogOpen = $state(false);
+	let draggedItemId = $state<string | null>(null);
+	let dragOverStage = $state<KanbanStage | null>(null);
 	let cleanup = $state<() => void>(() => {});
 
 	onMount(() => {
@@ -75,8 +78,7 @@
 		note = '';
 	}
 
-	async function handleSendMessage(event: SubmitEvent) {
-		event.preventDefault();
+	async function sendChatMessage() {
 		chatError = '';
 
 		const message = chatMessage.trim();
@@ -91,6 +93,18 @@
 			stage: 'todo'
 		});
 		chatMessage = '';
+	}
+
+	async function handleSendMessage(event: SubmitEvent) {
+		event.preventDefault();
+		await sendChatMessage();
+	}
+
+	function handleChatKeydown(event: KeyboardEvent) {
+		if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+
+		event.preventDefault();
+		void sendChatMessage();
 	}
 
 	async function handleDeleteConfirmed() {
@@ -123,6 +137,128 @@
 	function messageTitle(message: string) {
 		const firstLine = message.split('\n').find((line) => line.trim())?.trim() ?? 'Message';
 		return firstLine.length > 56 ? `${firstLine.slice(0, 53)}...` : firstLine;
+	}
+
+	function handleCardDragStart(event: DragEvent, item: LocalItem) {
+		draggedItemId = item.id;
+		event.dataTransfer?.setData('text/plain', item.id);
+		if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+	}
+
+	function handleCardDragEnd() {
+		draggedItemId = null;
+		dragOverStage = null;
+	}
+
+	async function moveItemToStage(itemId: string | null, stage: KanbanStage | null) {
+		if (!itemId || !stage) return;
+
+		const item = $localItems.find((item) => item.id === itemId);
+		if (!item || (item.stage ?? 'todo') === stage) return;
+
+		await updateLocalItem(item.id, { stage });
+	}
+
+	function stageFromPoint(x: number, y: number) {
+		const element = document.elementFromPoint(x, y);
+		const dropZone = element?.closest('[data-kanban-stage]');
+		if (!(dropZone instanceof HTMLElement)) return null;
+
+		const stage = dropZone.dataset.kanbanStage;
+		return kanbanStages.some((item) => item.id === stage) ? (stage as KanbanStage) : null;
+	}
+
+	function handleDragHandlePointerDown(event: PointerEvent, item: LocalItem) {
+		if (event.pointerType === 'mouse' && event.button !== 0) return;
+
+		draggedItemId = item.id;
+		dragOverStage = item.stage ?? 'todo';
+
+		const target = event.currentTarget;
+		if (target instanceof HTMLElement) target.setPointerCapture(event.pointerId);
+	}
+
+	function handleDragHandlePointerMove(event: PointerEvent) {
+		if (!draggedItemId) return;
+
+		const stage = stageFromPoint(event.clientX, event.clientY);
+		if (stage) dragOverStage = stage;
+	}
+
+	async function handleDragHandlePointerUp(event: PointerEvent) {
+		const itemId = draggedItemId;
+		const stage = stageFromPoint(event.clientX, event.clientY);
+
+		draggedItemId = null;
+		dragOverStage = null;
+
+		const target = event.currentTarget;
+		if (target instanceof HTMLElement && target.hasPointerCapture(event.pointerId)) {
+			target.releasePointerCapture(event.pointerId);
+		}
+
+		await moveItemToStage(itemId, stage);
+	}
+
+	function handleDragHandlePointerCancel() {
+		draggedItemId = null;
+		dragOverStage = null;
+	}
+
+	function handleDragHandleMouseDown(event: MouseEvent, item: LocalItem) {
+		if (event.button !== 0) return;
+
+		event.preventDefault();
+		draggedItemId = item.id;
+		dragOverStage = item.stage ?? 'todo';
+	}
+
+	function handleWindowMouseMove(event: MouseEvent) {
+		if (!draggedItemId) return;
+
+		const stage = stageFromPoint(event.clientX, event.clientY);
+		if (stage) dragOverStage = stage;
+	}
+
+	async function handleWindowMouseUp(event: MouseEvent) {
+		if (!draggedItemId) return;
+
+		const itemId = draggedItemId;
+		const stage = stageFromPoint(event.clientX, event.clientY);
+
+		draggedItemId = null;
+		dragOverStage = null;
+
+		await moveItemToStage(itemId, stage);
+	}
+
+	function handleColumnDragOver(event: DragEvent, stage: KanbanStage) {
+		if (!draggedItemId) return;
+
+		event.preventDefault();
+		if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+		dragOverStage = stage;
+	}
+
+	function handleColumnDragLeave(event: DragEvent, stage: KanbanStage) {
+		const currentTarget = event.currentTarget;
+		const relatedTarget = event.relatedTarget;
+		if (!(currentTarget instanceof HTMLElement)) return;
+
+		if (!(relatedTarget instanceof Node) || !currentTarget.contains(relatedTarget)) {
+			if (dragOverStage === stage) dragOverStage = null;
+		}
+	}
+
+	async function handleColumnDrop(event: DragEvent, stage: KanbanStage) {
+		event.preventDefault();
+
+		const itemId = event.dataTransfer?.getData('text/plain') || draggedItemId;
+
+		draggedItemId = null;
+		dragOverStage = null;
+
+		await moveItemToStage(itemId, stage);
 	}
 
 	function formatTime(value: number | null) {
@@ -160,6 +296,8 @@
 		return kanbanStages[stageIndex(stage) - 1]?.id;
 	}
 </script>
+
+<svelte:window onmousemove={handleWindowMouseMove} onmouseup={handleWindowMouseUp} />
 
 <div class="min-h-dvh bg-background text-foreground">
 	<header class="border-b bg-card">
@@ -314,25 +452,28 @@
 							{/if}
 						</div>
 
-						<form class="space-y-3" onsubmit={handleSendMessage}>
+						<form class="space-y-2" onsubmit={handleSendMessage}>
 							<Label for="chat-message">Message</Label>
-							<Textarea
-								id="chat-message"
-								bind:value={chatMessage}
-								class="min-h-24 resize-y"
-								placeholder="Write a message..."
-							/>
-							<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-								{#if chatError}
-									<p class="text-sm text-destructive">{chatError}</p>
-								{:else}
-									<p class="text-xs text-muted-foreground">New messages start in To do.</p>
-								{/if}
+							<div class="flex flex-col gap-2 sm:flex-row">
+								<Input
+									id="chat-message"
+									bind:value={chatMessage}
+									class="h-9"
+									autocomplete="off"
+									onkeydown={handleChatKeydown}
+									placeholder="Type a message and press Enter"
+									type="text"
+								/>
 								<Button type="submit" size="lg" class="h-9 w-full sm:w-auto">
 									<Send class="size-4" />
 									Send
 								</Button>
 							</div>
+							{#if chatError}
+								<p class="text-sm text-destructive">{chatError}</p>
+							{:else}
+								<p class="text-xs text-muted-foreground">Enter sends. New messages start in To do.</p>
+							{/if}
 						</form>
 					</Card.Content>
 				</Card.Root>
@@ -380,7 +521,12 @@
 
 				<div class="grid gap-4 xl:grid-cols-3">
 					{#each kanbanStages as stage}
-						<section class="min-w-0 rounded-lg border bg-muted/20 p-3">
+						<section
+							class={cn(
+								'flex min-w-0 flex-col rounded-lg border bg-muted/20 p-3',
+								dragOverStage === stage.id && 'border-primary bg-muted/40'
+							)}
+						>
 							<div class="mb-3 flex items-start justify-between gap-3">
 								<div>
 									<h2 class="text-sm font-medium">{stage.label}</h2>
@@ -391,31 +537,70 @@
 								</Badge>
 							</div>
 
-							<div class="space-y-3">
+							<div
+								role="list"
+								aria-label={`${stage.label} cards`}
+								data-kanban-stage={stage.id}
+								class="flex min-h-72 flex-1 flex-col gap-3 rounded-md"
+								ondragover={(event) => handleColumnDragOver(event, stage.id)}
+								ondragleave={(event) => handleColumnDragLeave(event, stage.id)}
+								ondrop={(event) => handleColumnDrop(event, stage.id)}
+							>
 								{#if stageItems($localItems, stage.id).length === 0}
-									<div class="rounded-md border border-dashed bg-background/60 px-3 py-6 text-center">
-										<p class="text-xs text-muted-foreground">No cards</p>
+									<div
+										class={cn(
+											'grid min-h-28 place-items-center rounded-md border border-dashed bg-background/60 px-3 py-6 text-center',
+											dragOverStage === stage.id && 'border-primary bg-background'
+										)}
+									>
+										<p class="text-xs text-muted-foreground">Drop a card here</p>
 									</div>
 								{:else}
 									{#each stageItems($localItems, stage.id) as item (item.id)}
-										<Card.Root size="sm">
+										<Card.Root
+											size="sm"
+											role="listitem"
+											aria-label={`${item.name} card`}
+											class={cn(draggedItemId === item.id && 'opacity-60')}
+										>
 											<Card.Content class="space-y-3">
-												<Input
-													class="h-9 bg-muted/40 text-sm font-medium"
-													value={item.name}
-													oninput={(event) =>
-														updateLocalItem(item.id, {
-															name: fieldValue(event)
-														})}
-												/>
-												<Textarea
-													class="min-h-20 resize-y bg-muted/40 text-sm leading-6"
-													value={item.note}
-													oninput={(event) =>
-														updateLocalItem(item.id, {
-															note: fieldValue(event)
-														})}
-												/>
+												<div class="flex items-start gap-2">
+													<Button
+														type="button"
+														variant="ghost"
+														size="icon-sm"
+														class="mt-0.5 cursor-grab text-muted-foreground active:cursor-grabbing"
+														aria-label={`Drag ${item.name}`}
+														draggable="true"
+														ondragstart={(event) => handleCardDragStart(event, item)}
+														ondragend={handleCardDragEnd}
+														onmousedown={(event) => handleDragHandleMouseDown(event, item)}
+														onpointerdown={(event) => handleDragHandlePointerDown(event, item)}
+														onpointermove={handleDragHandlePointerMove}
+														onpointerup={handleDragHandlePointerUp}
+														onpointercancel={handleDragHandlePointerCancel}
+													>
+														<GripVertical class="size-4" />
+													</Button>
+													<div class="min-w-0 flex-1 space-y-2">
+														<Input
+															class="h-9 bg-muted/40 text-sm font-medium"
+															value={item.name}
+															oninput={(event) =>
+																updateLocalItem(item.id, {
+																	name: fieldValue(event)
+																})}
+														/>
+														<Textarea
+															class="min-h-20 resize-y bg-muted/40 text-sm leading-6"
+															value={item.note}
+															oninput={(event) =>
+																updateLocalItem(item.id, {
+																	note: fieldValue(event)
+																})}
+														/>
+													</div>
+												</div>
 
 												<div class="flex flex-wrap items-center justify-between gap-2">
 													<Badge
