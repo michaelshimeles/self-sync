@@ -8,6 +8,7 @@ import type {
 	LocalItem,
 	MutationOperation,
 	OutboxMutation,
+	RealtimeActivity,
 	SyncActivity
 } from '$lib/shared/types';
 
@@ -66,6 +67,13 @@ export const syncActivity = writable<SyncActivity>({
 	lastMessage: 'Local database ready',
 	error: null,
 	databaseMode: 'unknown'
+});
+
+export const realtimeActivity = writable<RealtimeActivity>({
+	status: 'disconnected',
+	lastConnectedAt: null,
+	lastMessageAt: null,
+	message: 'Realtime not connected'
 });
 
 export const localSummary = derived(

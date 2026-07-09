@@ -19,6 +19,7 @@
 		localItems,
 		localSummary,
 		outboxItems,
+		realtimeActivity,
 		updateLocalItem
 	} from '$lib/client/local-store';
 	import { startSyncLoop, syncNow } from '$lib/client/sync-engine';
@@ -68,6 +69,7 @@
 
 		await deleteLocalItem(pendingDelete.id);
 		pendingDelete = null;
+		void syncNow('manual');
 	}
 
 	function formatTime(value: number | null) {
@@ -300,6 +302,23 @@
 						{$localSummary.activity.error}
 					</p>
 				{/if}
+				<div class="mt-3 rounded-md bg-zinc-50 px-3 py-2">
+					<div class="flex items-center justify-between gap-3">
+						<p class="text-sm font-medium text-zinc-700">Realtime</p>
+						<span
+							class={cn(
+								'rounded-md px-2 py-1 text-xs font-medium capitalize',
+								$realtimeActivity.status === 'connected' && 'bg-emerald-50 text-emerald-800',
+								$realtimeActivity.status === 'connecting' && 'bg-sky-50 text-sky-800',
+								$realtimeActivity.status === 'disconnected' && 'bg-amber-50 text-amber-800',
+								$realtimeActivity.status === 'error' && 'bg-red-50 text-red-800'
+							)}
+						>
+							{$realtimeActivity.status}
+						</span>
+					</div>
+					<p class="mt-1 text-pretty text-xs text-zinc-600">{$realtimeActivity.message}</p>
+				</div>
 			</section>
 
 			<section class="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">

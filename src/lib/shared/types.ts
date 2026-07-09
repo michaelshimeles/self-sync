@@ -72,3 +72,10 @@ export interface SyncActivity {
 	error: string | null;
 	databaseMode: DatabaseMode | 'unknown';
 }
+
+export interface RealtimeActivity {
+	status: 'connecting' | 'connected' | 'disconnected' | 'error';
+	lastConnectedAt: number | null;
+	lastMessageAt: number | null;
+	message: string;
+}
