@@ -1,25 +1,36 @@
 {
-  "name": "react-boilerplate",
-  "scripts": {
-    "dev": "bun run --hot server/index.ts",
-    "start": "bun run server/index.ts"
-  },
-  "dependencies": {
-    "@clerk/backend": "^1.18.0",
-    "@clerk/express": "^1.3.18",
-    "@hono/clerk-auth": "^2.0.0",
-    "@hono/zod-validator": "^0.4.1",
-    "@neondatabase/serverless": "^0.10.4",
-    "@tanstack/react-router": "^1.85.0",
-    "@tanstack/router-devtools": "^1.85.0",
-    "drizzle": "^1.4.0",
-    "drizzle-kit": "^0.28.1",
-    "drizzle-orm": "^0.36.4",
-    "hono": "^4.6.12",
-    "svix": "^1.42.0",
-    "zod": "^3.23.8"
-  },
-  "devDependencies": {
-    "@types/bun": "latest"
-  }
+	"name": "sveltekit-effect-local-first-sync",
+	"description": "A fast local-first SvelteKit app with an Effect-powered sync engine and Postgres/MySQL adapters.",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"scripts": {
+		"dev": "vite dev",
+		"build": "vite build",
+		"preview": "vite preview",
+		"prepare": "svelte-kit sync || echo ''",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+	},
+	"devDependencies": {
+		"@sveltejs/adapter-auto": "^7.0.1",
+		"@sveltejs/kit": "^2.63.0",
+		"@sveltejs/vite-plugin-svelte": "^7.1.2",
+		"@tailwindcss/vite": "^4.3.0",
+		"@types/pg": "^8.20.0",
+		"svelte": "^5.56.1",
+		"svelte-check": "^4.6.0",
+		"tailwindcss": "^4.3.0",
+		"typescript": "^6.0.3",
+		"vite": "^8.0.16"
+	},
+	"dependencies": {
+		"@lucide/svelte": "^1.23.0",
+		"clsx": "^2.1.1",
+		"dexie": "^4.4.4",
+		"effect": "^3.21.4",
+		"mysql2": "^3.22.6",
+		"pg": "^8.22.0",
+		"tailwind-merge": "^3.6.0"
+	}
 }

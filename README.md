@@ -1,74 +1,66 @@
-# Local-First React App with TanStack Query + Hono RPC Backend
+# SvelteKit Effect Local-First Sync
 
-A modern React application demonstrating local-first architecture using IndexedDB for offline support and real-time synchronization.
+Fast local-first app starter built with SvelteKit, Effect, IndexedDB, and a SQL-backed sync engine.
 
-## Features
+This repository is a rewrite of the original React/Hono demo into a focused sync-engine app with:
 
-- ✨ Offline-first architecture
-- 🔄 Real-time synchronization
-- 📱 Immediate local updates
-- 🚀 Optimistic UI updates
-- 🔒 Conflict resolution
-- 🎯 TypeScript support
+- SvelteKit 2 / Svelte 5
+- Effect for request validation and server-side sync programs
+- Dexie / IndexedDB as the reactive local source of truth
+- Postgres or MySQL storage adapters
+- Memory storage fallback for zero-config local development
 
-## Why Local-First?
+## What it does
 
-Local-first architecture provides several key advantages that significantly enhance the user experience:
+- Writes to IndexedDB first so the UI updates immediately.
+- Uses an outbox to batch create, edit, and delete mutations.
+- Syncs in the background, on reconnect, and through a manual sync button.
+- Validates sync requests with Effect Schema before touching storage.
+- Supports Postgres and MySQL with the same server-side sync contract.
+- Resolves stale writes deterministically with `updatedAt`, `revision`, and idempotent mutation IDs.
 
-### Instant Responsiveness
-- **Zero-Latency Operations**: All user actions (create, update, delete) happen instantly in the local database
-- **No Network Waiting**: Users never wait for server responses to see their changes
-- **Smooth UI**: Interface updates immediately, creating a native app-like experience
+## Run
 
-### Offline Resilience
-- **Always Available**: App works seamlessly without internet connection
-- **Background Sync**: Changes are automatically synchronized when connection is restored
-- **No Data Loss**: All operations are safely stored locally until successful sync
-
-### Performance Benefits
-- **Reduced Server Load**: Batched synchronization reduces the number of server requests
-- **Optimized Network Usage**: Only changed data is synchronized
-- **Efficient Caching**: Local database acts as a high-performance cache
-
-### Better User Experience
-- **No Loading States**: Users see their changes instantly
-- **Works Everywhere**: Reliable operation regardless of network conditions
-- **Reduced Frustration**: No failed operations due to network issues
-
-The sync engine complements this architecture by:
-1. **Intelligent Batching**: Groups multiple changes for efficient server updates
-2. **Conflict Resolution**: Handles concurrent changes gracefully
-3. **Automatic Retry**: Ensures reliable data synchronization
-4. **Real-time Updates**: Keeps local and server data in sync automatically
-
-This combination of local-first architecture and a robust sync engine creates an application that feels instantaneous while maintaining data consistency across all users.
-
-## Tech Stack
-
-- Frontend:
-  - React
-  - TanStack Query (React Query)
-  - Dexie.js (IndexedDB wrapper)
-  - TypeScript
-  - Tailwind CSS
-
-- Backend:
-  - Hono (TypeScript-first web framework)
-  - PostgreSQL with Drizzle ORM
-  - RPC-style API endpoints
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js
-- Bun
-- PostgreSQL database
-
-### Installation
-
-1. Clone the repository
-2. Install dependencies:
 ```sh
-bun install
+npm install
+npm run dev
 ```
+
+Open the local URL printed by Vite. The app runs without a database by default.
+
+## Database
+
+The app works without a database by using an in-memory server store. For durable sync, set `DATABASE_URL`.
+
+Postgres:
+
+```sh
+DATABASE_DRIVER=postgres
+DATABASE_URL=postgres://user:password@localhost:5432/local_first
+```
+
+MySQL:
+
+```sh
+DATABASE_DRIVER=mysql
+DATABASE_URL=mysql://user:password@localhost:3306/local_first
+```
+
+The server creates the `sync_items` table automatically on first use. The raw SQL is also available in:
+
+- `src/lib/server/sql/schema.postgres.sql`
+- `src/lib/server/sql/schema.mysql.sql`
+
+## API
+
+- `POST /api/sync` applies queued mutations and returns authoritative server state.
+- `GET /api/items` returns non-deleted server items.
+- `GET /api/health` reports the active storage mode.
+
+## Architecture
+
+Local writes go to IndexedDB first and enqueue a single latest mutation per item in the outbox. The UI renders from Dexie `liveQuery`, so creates, edits, and deletes update immediately without waiting for the network.
+
+`POST /api/sync` runs an Effect program that validates the request, applies queued mutations through the selected storage adapter, and returns the authoritative server state. The client merges that response back into IndexedDB and clears completed outbox mutations.
+
+Conflict handling is deterministic: newer `updatedAt` wins, stale mutations are marked as reconciled, and mutation IDs make retries idempotent.

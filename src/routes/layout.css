@@ -1,0 +1,17 @@
+@import 'tailwindcss';
+
+@layer base {
+	html {
+		color-scheme: light;
+	}
+
+	body {
+		@apply min-h-dvh bg-zinc-50 text-zinc-950 antialiased;
+	}
+
+	button,
+	input,
+	textarea {
+		font: inherit;
+	}
+}
