@@ -54,8 +54,23 @@ function realtimeWebSocketPlugin(options: { listenDatabaseUrl?: string } = {}): 
 
 export default defineConfig(({ mode }) => {
 	const env = loadEnv(mode, process.cwd(), '');
+	const databaseDriver = (
+		process.env.DATABASE_DRIVER ??
+		process.env.DB_DRIVER ??
+		env.DATABASE_DRIVER ??
+		env.DB_DRIVER ??
+		''
+	).toLowerCase();
+	const configuredDatabaseUrl =
+		process.env.DATABASE_URL !== undefined ? process.env.DATABASE_URL : env.DATABASE_URL;
 	const listenDatabaseUrl =
-		env.DATABASE_URL_UNPOOLED || env.POSTGRES_URL_NON_POOLING || env.DATABASE_URL;
+		databaseDriver === 'memory'
+			? undefined
+			: process.env.DATABASE_URL_UNPOOLED ||
+				process.env.POSTGRES_URL_NON_POOLING ||
+				env.DATABASE_URL_UNPOOLED ||
+				env.POSTGRES_URL_NON_POOLING ||
+				configuredDatabaseUrl;
 
 	return {
 		plugins: [

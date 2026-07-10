@@ -1,6 +1,6 @@
 {
 	"name": "self-sync",
-	"description": "A local-first sync engine for SvelteKit and Effect with reactive IndexedDB state, WebSockets, and Postgres/MySQL adapters.",
+	"description": "A transactional local-first sync engine for SvelteKit and Effect with reactive IndexedDB state, WebSockets, and Postgres/MySQL adapters.",
 	"private": true,
 	"version": "0.0.1",
 	"type": "module",
@@ -8,6 +8,8 @@
 		"dev": "vite dev",
 		"build": "vite build",
 		"preview": "vite preview",
+		"test": "node --test tests/*.test.ts",
+		"verify:transactions": "node scripts/verify-transaction-api.mjs",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
@@ -24,6 +26,7 @@
 		"@types/ws": "^8.18.1",
 		"bits-ui": "^2.18.1",
 		"clsx": "^2.1.1",
+		"fake-indexeddb": "^6.2.5",
 		"shadcn-svelte": "^1.4.0",
 		"svelte": "^5.56.1",
 		"svelte-check": "^4.6.0",

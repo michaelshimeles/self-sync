@@ -7,7 +7,7 @@ import { syncProgram } from '$lib/server/sync-service';
 function errorResponse(error: unknown) {
 	const tag = typeof error === 'object' && error && '_tag' in error ? String(error._tag) : '';
 	const message = error instanceof Error ? error.message : 'Sync failed';
-	const status = tag.includes('Parse') ? 400 : 500;
+	const status = tag.includes('Parse') || tag.includes('InvalidSyncRequest') ? 400 : 500;
 
 	return json({ error: message, tag }, { status });
 }
@@ -17,9 +17,13 @@ export const POST: RequestHandler = async ({ request }) => {
 		const body = await request.json();
 		const result = await Effect.runPromise(syncProgram(body));
 
-		const changedItemIds = result.applied
-			.filter((outcome) => outcome.status === 'applied')
-			.map((outcome) => outcome.itemId);
+		const changedItemIds = [
+			...new Set(
+				result.applied
+					.filter((outcome) => outcome.status !== 'conflict')
+					.map((outcome) => outcome.itemId)
+			)
+		];
 
 		if (
 			changedItemIds.length > 0 &&

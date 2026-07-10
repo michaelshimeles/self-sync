@@ -3,7 +3,13 @@ import { liveQuery } from 'dexie';
 import { getClientId } from './identity';
 import { db } from './local-db';
 import { markOutboxFailed, realtimeActivity, syncActivity } from './local-store';
-import type { LocalItem, OutboxMutation, ServerItem, SyncChange, SyncResponse } from '$lib/shared/types';
+import type {
+	LocalItem,
+	OutboxMutation,
+	ServerItem,
+	SyncResponse,
+	SyncTransaction
+} from '$lib/shared/types';
 
 let syncInFlight = false;
 let queuedSyncReason: SyncReason | null = null;
@@ -44,9 +50,15 @@ function toLocalItem(item: ServerItem): LocalItem {
 
 async function mergeServerItems(items: ServerItem[], sent: OutboxMutation[], response: SyncResponse) {
 	const completedMutationIds = new Set(response.applied.map((outcome) => outcome.mutationId));
+	const completedTransactionIds = new Set(
+		(response.transactions ?? []).map((outcome) => outcome.transactionId)
+	);
 	const serverItemIds = new Set(items.map((item) => item.id));
 
 	await db.transaction('rw', db.items, db.outbox, async () => {
+		if (completedTransactionIds.size > 0) {
+			await db.outbox.where('transactionId').anyOf([...completedTransactionIds]).delete();
+		}
 		await Promise.all([...completedMutationIds].map((id) => db.outbox.delete(id)));
 
 		const stillPending = await db.outbox.toArray();
@@ -81,6 +93,35 @@ async function mergeServerItems(items: ServerItem[], sent: OutboxMutation[], res
 			})
 		);
 	});
+}
+
+function groupTransactions(queued: OutboxMutation[]): SyncTransaction[] {
+	const groups = new Map<string, SyncTransaction>();
+	const ordered = [...queued].sort(
+		(a, b) => a.createdAt - b.createdAt || a.sequence - b.sequence || a.id.localeCompare(b.id)
+	);
+
+	for (const mutation of ordered) {
+		const transaction = groups.get(mutation.transactionId) ?? {
+			id: mutation.transactionId,
+			createdAt: mutation.createdAt,
+			changes: []
+		};
+
+		groups.set(mutation.transactionId, {
+			...transaction,
+			changes: [
+				...transaction.changes,
+				{
+					mutationId: mutation.id,
+					op: mutation.op,
+					item: mutation.item
+				}
+			]
+		});
+	}
+
+	return [...groups.values()];
 }
 
 export function requestSync(reason: SyncReason = 'local', delay = 25) {
@@ -135,18 +176,14 @@ export async function syncNow(reason: SyncReason = 'manual') {
 
 	try {
 		const queued = await db.outbox.orderBy('createdAt').toArray();
-		const changes: SyncChange[] = queued.map((mutation) => ({
-			mutationId: mutation.id,
-			op: mutation.op,
-			item: mutation.item
-		}));
+		const transactions = groupTransactions(queued);
 
 		const response = await fetch('/api/sync', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({
 				clientId: getClientId(),
-				changes
+				transactions
 			})
 		});
 

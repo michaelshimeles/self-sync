@@ -141,6 +141,9 @@ export async function subscribeSyncChanges(
 	}
 
 	const client = new Client({ connectionString: normalisePostgresConnectionString(connectionString) });
+	client.on('error', (error) => {
+		console.error('Postgres realtime listener disconnected', error);
+	});
 
 	try {
 		await client.connect();

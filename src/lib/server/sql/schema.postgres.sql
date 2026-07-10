@@ -11,3 +11,11 @@ create table if not exists sync_items (
 );
 
 create index if not exists sync_items_updated_at_idx on sync_items (updated_at desc);
+
+create table if not exists sync_transactions (
+	client_id text not null,
+	id text not null,
+	status text not null check (status in ('applied', 'conflict')),
+	committed_at bigint not null,
+	primary key (client_id, id)
+);

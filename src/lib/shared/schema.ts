@@ -17,9 +17,22 @@ export const SyncChangeSchema = Schema.Struct({
 	item: ClientSyncItemSchema
 });
 
-export const SyncRequestSchema = Schema.Struct({
+export const SyncTransactionSchema = Schema.Struct({
+	id: Schema.String,
+	createdAt: Schema.Number,
+	changes: Schema.Array(SyncChangeSchema)
+});
+
+export const TransactionSyncRequestSchema = Schema.Struct({
+	clientId: Schema.String,
+	transactions: Schema.Array(SyncTransactionSchema)
+});
+
+export const LegacySyncRequestSchema = Schema.Struct({
 	clientId: Schema.String,
 	changes: Schema.Array(SyncChangeSchema)
 });
+
+export const SyncRequestSchema = Schema.Union(TransactionSyncRequestSchema, LegacySyncRequestSchema);
 
 export type SyncRequestInput = Schema.Schema.Type<typeof SyncRequestSchema>;

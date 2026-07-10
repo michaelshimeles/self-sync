@@ -4,61 +4,29 @@ import pg from 'pg';
 import type { RowDataPacket } from 'mysql2/promise';
 import type {
 	DatabaseMode,
-	KanbanStage,
 	ServerItem,
-	SyncChange,
-	SyncOutcome,
 	SyncRequest,
-	SyncResponse
+	SyncResponse,
+	SyncTransaction,
+	SyncTransactionOutcome
 } from '$lib/shared/types';
+import {
+	normaliseStage,
+	planSyncTransaction,
+	sortItems,
+	toServerItem,
+	type StoredSyncItem,
+	type TerminalTransactionStatus,
+	type TransactionPlan
+} from './transaction';
 
 const { Pool } = pg;
-
-interface StoredItem extends ServerItem {
-	lastMutationId: string | null;
-}
-
-function normaliseStage(value: unknown): KanbanStage {
-	if (value === 'doing' || value === 'done') return value;
-	return 'todo';
-}
+const MAX_TRANSACTION_ATTEMPTS = 4;
 
 export interface SyncStorage {
 	mode: DatabaseMode;
 	listItems(options?: { includeDeleted?: boolean }): Promise<ServerItem[]>;
 	applyChanges(request: SyncRequest): Promise<SyncResponse>;
-}
-
-function normaliseIncoming(change: SyncChange): ServerItem {
-	const now = Date.now();
-
-	return {
-		id: change.item.id,
-		name: change.item.name.trim() || 'Untitled',
-		note: change.item.note,
-		stage: normaliseStage(change.item.stage),
-		revision: 0,
-		updatedAt: change.item.updatedAt || now,
-		deletedAt: change.op === 'delete' ? (change.item.deletedAt ?? now) : change.item.deletedAt,
-		sourceClientId: null
-	};
-}
-
-function toServerItem(item: StoredItem): ServerItem {
-	return {
-		id: item.id,
-		name: item.name,
-		note: item.note,
-		stage: normaliseStage(item.stage),
-		revision: item.revision,
-		updatedAt: item.updatedAt,
-		deletedAt: item.deletedAt,
-		sourceClientId: item.sourceClientId
-	};
-}
-
-function sortItems(items: ServerItem[]) {
-	return [...items].sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 function normalisePostgresConnectionString(connectionString: string) {
@@ -77,13 +45,31 @@ function normalisePostgresConnectionString(connectionString: string) {
 	return connectionString;
 }
 
+function makeResponse(
+	mode: DatabaseMode,
+	plans: TransactionPlan[],
+	items: ServerItem[]
+): SyncResponse {
+	return {
+		serverTime: Date.now(),
+		databaseMode: mode,
+		transactions: plans.map((plan) => plan.transaction),
+		applied: plans.flatMap((plan) => plan.outcomes),
+		items
+	};
+}
+
+function transactionKey(clientId: string, transactionId: string) {
+	return `${clientId}\u0000${transactionId}`;
+}
+
 class MemoryStorage implements SyncStorage {
 	mode: DatabaseMode = 'memory';
-	private store: Map<string, StoredItem>;
 
-	constructor(store: Map<string, StoredItem>) {
-		this.store = store;
-	}
+	constructor(
+		private store: Map<string, StoredSyncItem>,
+		private transactions: Map<string, TerminalTransactionStatus>
+	) {}
 
 	async listItems(options: { includeDeleted?: boolean } = {}) {
 		const rows = [...this.store.values()]
@@ -93,55 +79,35 @@ class MemoryStorage implements SyncStorage {
 		return sortItems(rows);
 	}
 
-	async applyChanges(request: SyncRequest): Promise<SyncResponse> {
-		const applied: SyncOutcome[] = [];
-
-		for (const change of request.changes) {
-			const incoming = normaliseIncoming(change);
-			const current = this.store.get(incoming.id);
-
-			if (current?.lastMutationId === change.mutationId) {
-				applied.push({
-					mutationId: change.mutationId,
-					itemId: incoming.id,
-					status: 'duplicate',
-					revision: current.revision
-				});
-				continue;
-			}
-
-			if (current && current.updatedAt > incoming.updatedAt) {
-				applied.push({
-					mutationId: change.mutationId,
-					itemId: incoming.id,
-					status: 'conflict',
-					revision: current.revision
-				});
-				continue;
-			}
-
-			const next: StoredItem = {
-				...incoming,
-				revision: (current?.revision ?? 0) + 1,
-				sourceClientId: request.clientId,
-				lastMutationId: change.mutationId
-			};
-
-			this.store.set(next.id, next);
-			applied.push({
-				mutationId: change.mutationId,
-				itemId: next.id,
-				status: 'applied',
-				revision: next.revision
-			});
+	private applyTransaction(clientId: string, transaction: SyncTransaction) {
+		const currentItems = new Map<string, StoredSyncItem>();
+		for (const change of transaction.changes) {
+			const current = this.store.get(change.item.id);
+			if (current) currentItems.set(current.id, current);
 		}
 
-		return {
-			serverTime: Date.now(),
-			databaseMode: this.mode,
-			applied,
-			items: await this.listItems({ includeDeleted: true })
-		};
+		const key = transactionKey(clientId, transaction.id);
+		const plan = planSyncTransaction({
+			clientId,
+			transaction,
+			currentItems,
+			terminalStatus: this.transactions.get(key)
+		});
+
+		if (plan.status === 'applied') {
+			for (const item of plan.writes) this.store.set(item.id, item);
+		}
+
+		if (plan.recordStatus) this.transactions.set(key, plan.recordStatus);
+		return plan;
+	}
+
+	async applyChanges(request: SyncRequest): Promise<SyncResponse> {
+		const plans = request.transactions.map((transaction) =>
+			this.applyTransaction(request.clientId, transaction)
+		);
+
+		return makeResponse(this.mode, plans, await this.listItems({ includeDeleted: true }));
 	}
 }
 
@@ -159,9 +125,16 @@ create table if not exists sync_items (
 );
 alter table sync_items add column if not exists stage text not null default 'todo';
 create index if not exists sync_items_updated_at_idx on sync_items (updated_at desc);
+create table if not exists sync_transactions (
+	client_id text not null,
+	id text not null,
+	status text not null check (status in ('applied', 'conflict')),
+	committed_at bigint not null,
+	primary key (client_id, id)
+);
 `;
 
-function fromPostgresRow(row: Record<string, unknown>): StoredItem {
+function fromPostgresRow(row: Record<string, unknown>): StoredSyncItem {
 	return {
 		id: String(row.id),
 		name: String(row.name),
@@ -173,6 +146,14 @@ function fromPostgresRow(row: Record<string, unknown>): StoredItem {
 		sourceClientId: row.source_client_id === null ? null : String(row.source_client_id),
 		lastMutationId: row.last_mutation_id === null ? null : String(row.last_mutation_id)
 	};
+}
+
+function postgresErrorCode(error: unknown) {
+	return typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
+}
+
+function isRetryablePostgresError(error: unknown) {
+	return ['40001', '40P01', '23505'].includes(postgresErrorCode(error));
 }
 
 class PostgresStorage implements SyncStorage {
@@ -194,7 +175,6 @@ class PostgresStorage implements SyncStorage {
 
 	async listItems(options: { includeDeleted?: boolean } = {}) {
 		await this.ensureSchema();
-
 		const result = await this.pool.query(
 			`select * from sync_items
 			 ${options.includeDeleted ? '' : 'where deleted_at is null'}
@@ -204,106 +184,130 @@ class PostgresStorage implements SyncStorage {
 		return result.rows.map(fromPostgresRow).map(toServerItem);
 	}
 
-	async applyChanges(request: SyncRequest): Promise<SyncResponse> {
-		await this.ensureSchema();
-		const client = await this.pool.connect();
-		const applied: SyncOutcome[] = [];
+	private async applyTransaction(clientId: string, transaction: SyncTransaction) {
+		for (let attempt = 1; attempt <= MAX_TRANSACTION_ATTEMPTS; attempt += 1) {
+			const client = await this.pool.connect();
+			let transactionStarted = false;
 
-		try {
-			await client.query('begin');
+			try {
+				await client.query('begin isolation level serializable');
+				transactionStarted = true;
 
-			for (const change of request.changes) {
-				const incoming = normaliseIncoming(change);
-				const currentResult = await client.query('select * from sync_items where id = $1 for update', [
-					incoming.id
-				]);
-				const current = currentResult.rows[0] ? fromPostgresRow(currentResult.rows[0]) : null;
-
-				if (current?.lastMutationId === change.mutationId) {
-					applied.push({
-						mutationId: change.mutationId,
-						itemId: incoming.id,
-						status: 'duplicate',
-						revision: current.revision
-					});
-					continue;
-				}
-
-				if (current && current.updatedAt > incoming.updatedAt) {
-					applied.push({
-						mutationId: change.mutationId,
-						itemId: incoming.id,
-						status: 'conflict',
-						revision: current.revision
-					});
-					continue;
-				}
-
-				const nextRevision = (current?.revision ?? 0) + 1;
-
-				if (current) {
-					await client.query(
-						`update sync_items
-						 set name = $2, note = $3, stage = $4, revision = $5, updated_at = $6, deleted_at = $7,
-						 source_client_id = $8, last_mutation_id = $9
-						 where id = $1`,
-						[
-							incoming.id,
-							incoming.name,
-							incoming.note,
-							incoming.stage,
-							nextRevision,
-							incoming.updatedAt,
-							incoming.deletedAt,
-							request.clientId,
-							change.mutationId
-						]
-					);
-				} else {
-					await client.query(
-						`insert into sync_items
-						 (id, name, note, stage, revision, updated_at, deleted_at, source_client_id, last_mutation_id)
-						 values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-						[
-							incoming.id,
-							incoming.name,
-							incoming.note,
-							incoming.stage,
-							nextRevision,
-							incoming.updatedAt,
-							incoming.deletedAt,
-							request.clientId,
-							change.mutationId
-						]
-					);
-				}
-
-				applied.push({
-					mutationId: change.mutationId,
-					itemId: incoming.id,
-					status: 'applied',
-					revision: nextRevision
+				const ledgerResult = await client.query(
+					`select status from sync_transactions where client_id = $1 and id = $2 for update`,
+					[clientId, transaction.id]
+				);
+				const terminalStatus = ledgerResult.rows[0]?.status as
+					| TerminalTransactionStatus
+					| undefined;
+				const itemIds = [...new Set(transaction.changes.map((change) => change.item.id))].sort();
+				const itemResult =
+					itemIds.length === 0
+						? { rows: [] as Record<string, unknown>[] }
+						: await client.query(
+								`select * from sync_items where id = any($1::text[]) order by id for update`,
+								[itemIds]
+							);
+				const currentItems = new Map(
+					itemResult.rows.map((row) => {
+						const item = fromPostgresRow(row);
+						return [item.id, item] as const;
+					})
+				);
+				const plan = planSyncTransaction({
+					clientId,
+					transaction,
+					currentItems,
+					terminalStatus
 				});
-			}
 
-			await client.query('commit');
-		} catch (error) {
-			await client.query('rollback');
-			throw error;
-		} finally {
-			client.release();
+				for (const item of plan.writes) {
+					if (currentItems.has(item.id)) {
+						await client.query(
+							`update sync_items
+							 set name = $2, note = $3, stage = $4, revision = $5, updated_at = $6,
+							 deleted_at = $7, source_client_id = $8, last_mutation_id = $9
+							 where id = $1`,
+							[
+								item.id,
+								item.name,
+								item.note,
+								item.stage,
+								item.revision,
+								item.updatedAt,
+								item.deletedAt,
+								item.sourceClientId,
+								item.lastMutationId
+							]
+						);
+					} else {
+						await client.query(
+							`insert into sync_items
+							 (id, name, note, stage, revision, updated_at, deleted_at, source_client_id, last_mutation_id)
+							 values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+							[
+								item.id,
+								item.name,
+								item.note,
+								item.stage,
+								item.revision,
+								item.updatedAt,
+								item.deletedAt,
+								item.sourceClientId,
+								item.lastMutationId
+							]
+						);
+					}
+				}
+
+				if (plan.recordStatus) {
+					const ledgerInsert = await client.query(
+						`insert into sync_transactions (client_id, id, status, committed_at)
+						 values ($1, $2, $3, $4)
+						 on conflict (client_id, id) do nothing`,
+						[clientId, transaction.id, plan.recordStatus, Date.now()]
+					);
+					if (ledgerInsert.rowCount !== 1) {
+						const error = new Error('Concurrent transaction ledger write');
+						Object.assign(error, { code: '40001' });
+						throw error;
+					}
+				}
+
+				await client.query('commit');
+				return plan;
+			} catch (error) {
+				if (transactionStarted) {
+					try {
+						await client.query('rollback');
+					} catch {
+						// Preserve the original transaction failure.
+					}
+				}
+
+				if (attempt < MAX_TRANSACTION_ATTEMPTS && isRetryablePostgresError(error)) continue;
+				throw error;
+			} finally {
+				client.release();
+			}
 		}
 
-		return {
-			serverTime: Date.now(),
-			databaseMode: this.mode,
-			applied,
-			items: await this.listItems({ includeDeleted: true })
-		};
+		throw new Error(`Transaction ${transaction.id} exhausted its retry budget`);
+	}
+
+	async applyChanges(request: SyncRequest): Promise<SyncResponse> {
+		await this.ensureSchema();
+		const plans: TransactionPlan[] = [];
+
+		for (const transaction of request.transactions) {
+			plans.push(await this.applyTransaction(request.clientId, transaction));
+		}
+
+		return makeResponse(this.mode, plans, await this.listItems({ includeDeleted: true }));
 	}
 }
 
-const mysqlSchema = `
+const mysqlItemsSchema = `
 create table if not exists sync_items (
 	id varchar(64) primary key,
 	name text not null,
@@ -315,10 +319,20 @@ create table if not exists sync_items (
 	source_client_id varchar(128) null,
 	last_mutation_id varchar(128) null,
 	index sync_items_updated_at_idx (updated_at desc)
-);
+)
 `;
 
-type MySqlRow = RowDataPacket & {
+const mysqlTransactionsSchema = `
+create table if not exists sync_transactions (
+	client_id varchar(128) not null,
+	id varchar(128) not null,
+	status varchar(16) not null,
+	committed_at bigint not null,
+	primary key (client_id, id)
+)
+`;
+
+type MySqlItemRow = RowDataPacket & {
 	id: string;
 	name: string;
 	note: string;
@@ -330,7 +344,11 @@ type MySqlRow = RowDataPacket & {
 	last_mutation_id: string | null;
 };
 
-function fromMySqlRow(row: MySqlRow): StoredItem {
+type MySqlTransactionRow = RowDataPacket & {
+	status: TerminalTransactionStatus;
+};
+
+function fromMySqlRow(row: MySqlItemRow): StoredSyncItem {
 	return {
 		id: row.id,
 		name: row.name,
@@ -344,6 +362,24 @@ function fromMySqlRow(row: MySqlRow): StoredItem {
 	};
 }
 
+function mysqlErrorDetails(error: unknown) {
+	if (typeof error !== 'object' || !error) return { code: '', errno: 0, sqlState: '' };
+	return {
+		code: 'code' in error ? String(error.code) : '',
+		errno: 'errno' in error ? Number(error.errno) : 0,
+		sqlState: 'sqlState' in error ? String(error.sqlState) : ''
+	};
+}
+
+function isRetryableMySqlError(error: unknown) {
+	const details = mysqlErrorDetails(error);
+	return (
+		['ER_LOCK_DEADLOCK', 'ER_LOCK_WAIT_TIMEOUT', 'ER_DUP_ENTRY'].includes(details.code) ||
+		[1205, 1213, 1062].includes(details.errno) ||
+		details.sqlState === '40001'
+	);
+}
+
 class MySqlStorage implements SyncStorage {
 	mode: DatabaseMode = 'mysql';
 	private pool: mysql.Pool;
@@ -355,23 +391,23 @@ class MySqlStorage implements SyncStorage {
 
 	private async ensureSchema() {
 		if (this.ready) return;
-		await this.pool.query(mysqlSchema);
+		await this.pool.query(mysqlItemsSchema);
+		await this.pool.query(mysqlTransactionsSchema);
+
 		try {
 			await this.pool.query(
 				`alter table sync_items add column stage varchar(16) not null default 'todo'`
 			);
 		} catch (error) {
-			if (!(error instanceof Error) || !/duplicate column/i.test(error.message)) {
-				throw error;
-			}
+			if (!(error instanceof Error) || !/duplicate column/i.test(error.message)) throw error;
 		}
+
 		this.ready = true;
 	}
 
 	async listItems(options: { includeDeleted?: boolean } = {}) {
 		await this.ensureSchema();
-
-		const [rows] = await this.pool.query<MySqlRow[]>(
+		const [rows] = await this.pool.query<MySqlItemRow[]>(
 			`select * from sync_items
 			 ${options.includeDeleted ? '' : 'where deleted_at is null'}
 			 order by updated_at desc`
@@ -380,108 +416,126 @@ class MySqlStorage implements SyncStorage {
 		return rows.map(fromMySqlRow).map(toServerItem);
 	}
 
-	async applyChanges(request: SyncRequest): Promise<SyncResponse> {
-		await this.ensureSchema();
-		const connection = await this.pool.getConnection();
-		const applied: SyncOutcome[] = [];
+	private async applyTransaction(clientId: string, transaction: SyncTransaction) {
+		for (let attempt = 1; attempt <= MAX_TRANSACTION_ATTEMPTS; attempt += 1) {
+			const connection = await this.pool.getConnection();
+			let transactionStarted = false;
 
-		try {
-			await connection.beginTransaction();
+			try {
+				await connection.query('set transaction isolation level serializable');
+				await connection.beginTransaction();
+				transactionStarted = true;
 
-			for (const change of request.changes) {
-				const incoming = normaliseIncoming(change);
-				const [rows] = await connection.query<MySqlRow[]>(
-					'select * from sync_items where id = ? for update',
-					[incoming.id]
+				const [ledgerRows] = await connection.query<MySqlTransactionRow[]>(
+					`select status from sync_transactions where client_id = ? and id = ? for update`,
+					[clientId, transaction.id]
 				);
-				const current = rows[0] ? fromMySqlRow(rows[0]) : null;
+				const terminalStatus = ledgerRows[0]?.status;
+				const itemIds = [...new Set(transaction.changes.map((change) => change.item.id))].sort();
+				let itemRows: MySqlItemRow[] = [];
 
-				if (current?.lastMutationId === change.mutationId) {
-					applied.push({
-						mutationId: change.mutationId,
-						itemId: incoming.id,
-						status: 'duplicate',
-						revision: current.revision
-					});
-					continue;
-				}
-
-				if (current && current.updatedAt > incoming.updatedAt) {
-					applied.push({
-						mutationId: change.mutationId,
-						itemId: incoming.id,
-						status: 'conflict',
-						revision: current.revision
-					});
-					continue;
-				}
-
-				const nextRevision = (current?.revision ?? 0) + 1;
-
-				if (current) {
-					await connection.query(
-						`update sync_items
-						 set name = ?, note = ?, stage = ?, revision = ?, updated_at = ?, deleted_at = ?,
-						 source_client_id = ?, last_mutation_id = ?
-						 where id = ?`,
-						[
-							incoming.name,
-							incoming.note,
-							incoming.stage,
-							nextRevision,
-							incoming.updatedAt,
-							incoming.deletedAt,
-							request.clientId,
-							change.mutationId,
-							incoming.id
-						]
-					);
-				} else {
-					await connection.query(
-						`insert into sync_items
-						 (id, name, note, stage, revision, updated_at, deleted_at, source_client_id, last_mutation_id)
-						 values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-						[
-							incoming.id,
-							incoming.name,
-							incoming.note,
-							incoming.stage,
-							nextRevision,
-							incoming.updatedAt,
-							incoming.deletedAt,
-							request.clientId,
-							change.mutationId
-						]
+				if (itemIds.length > 0) {
+					const placeholders = itemIds.map(() => '?').join(', ');
+					[itemRows] = await connection.query<MySqlItemRow[]>(
+						`select * from sync_items where id in (${placeholders}) order by id for update`,
+						itemIds
 					);
 				}
 
-				applied.push({
-					mutationId: change.mutationId,
-					itemId: incoming.id,
-					status: 'applied',
-					revision: nextRevision
+				const currentItems = new Map(
+					itemRows.map((row) => {
+						const item = fromMySqlRow(row);
+						return [item.id, item] as const;
+					})
+				);
+				const plan = planSyncTransaction({
+					clientId,
+					transaction,
+					currentItems,
+					terminalStatus
 				});
-			}
 
-			await connection.commit();
-		} catch (error) {
-			await connection.rollback();
-			throw error;
-		} finally {
-			connection.release();
+				for (const item of plan.writes) {
+					if (currentItems.has(item.id)) {
+						await connection.query(
+							`update sync_items
+							 set name = ?, note = ?, stage = ?, revision = ?, updated_at = ?, deleted_at = ?,
+							 source_client_id = ?, last_mutation_id = ? where id = ?`,
+							[
+								item.name,
+								item.note,
+								item.stage,
+								item.revision,
+								item.updatedAt,
+								item.deletedAt,
+								item.sourceClientId,
+								item.lastMutationId,
+								item.id
+							]
+						);
+					} else {
+						await connection.query(
+							`insert into sync_items
+							 (id, name, note, stage, revision, updated_at, deleted_at, source_client_id, last_mutation_id)
+							 values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+							[
+								item.id,
+								item.name,
+								item.note,
+								item.stage,
+								item.revision,
+								item.updatedAt,
+								item.deletedAt,
+								item.sourceClientId,
+								item.lastMutationId
+							]
+						);
+					}
+				}
+
+				if (plan.recordStatus) {
+					await connection.query(
+						`insert into sync_transactions (client_id, id, status, committed_at) values (?, ?, ?, ?)`,
+						[clientId, transaction.id, plan.recordStatus, Date.now()]
+					);
+				}
+
+				await connection.commit();
+				return plan;
+			} catch (error) {
+				if (transactionStarted) {
+					try {
+						await connection.rollback();
+					} catch {
+						// Preserve the original transaction failure.
+					}
+				}
+
+				if (attempt < MAX_TRANSACTION_ATTEMPTS && isRetryableMySqlError(error)) continue;
+				throw error;
+			} finally {
+				connection.release();
+			}
 		}
 
-		return {
-			serverTime: Date.now(),
-			databaseMode: this.mode,
-			applied,
-			items: await this.listItems({ includeDeleted: true })
-		};
+		throw new Error(`Transaction ${transaction.id} exhausted its retry budget`);
+	}
+
+	async applyChanges(request: SyncRequest): Promise<SyncResponse> {
+		await this.ensureSchema();
+		const plans: TransactionPlan[] = [];
+
+		for (const transaction of request.transactions) {
+			plans.push(await this.applyTransaction(request.clientId, transaction));
+		}
+
+		return makeResponse(this.mode, plans, await this.listItems({ includeDeleted: true }));
 	}
 }
 
 const globalStore = globalThis as typeof globalThis & {
-	__selfSyncStore?: Map<string, StoredItem>;
+	__selfSyncStore?: Map<string, StoredSyncItem>;
+	__selfSyncTransactions?: Map<string, TerminalTransactionStatus>;
 };
 
 let storageSingleton: SyncStorage | null = null;
@@ -499,7 +553,11 @@ export function getStorage(): SyncStorage {
 
 	if (!connectionString || driver === 'memory') {
 		globalStore.__selfSyncStore ??= new Map();
-		storageSingleton = new MemoryStorage(globalStore.__selfSyncStore);
+		globalStore.__selfSyncTransactions ??= new Map();
+		storageSingleton = new MemoryStorage(
+			globalStore.__selfSyncStore,
+			globalStore.__selfSyncTransactions
+		);
 		storageKey = nextKey;
 		return storageSingleton;
 	}

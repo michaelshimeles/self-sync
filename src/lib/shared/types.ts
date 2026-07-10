@@ -30,6 +30,8 @@ export interface ClientSyncItem {
 
 export interface OutboxMutation {
 	id: string;
+	transactionId: string;
+	sequence: number;
 	itemId: string;
 	op: MutationOperation;
 	item: ClientSyncItem;
@@ -49,21 +51,41 @@ export interface SyncChange {
 	item: ClientSyncItem;
 }
 
+export interface SyncTransaction {
+	id: string;
+	createdAt: number;
+	changes: ReadonlyArray<SyncChange>;
+}
+
 export interface SyncRequest {
+	clientId: string;
+	transactions: ReadonlyArray<SyncTransaction>;
+}
+
+export interface LegacySyncRequest {
 	clientId: string;
 	changes: ReadonlyArray<SyncChange>;
 }
 
 export interface SyncOutcome {
+	transactionId: string;
 	mutationId: string;
 	itemId: string;
 	status: 'applied' | 'conflict' | 'duplicate';
 	revision: number;
 }
 
+export interface SyncTransactionOutcome {
+	transactionId: string;
+	status: 'applied' | 'conflict' | 'duplicate';
+	mutationIds: string[];
+	itemIds: string[];
+}
+
 export interface SyncResponse {
 	serverTime: number;
 	databaseMode: DatabaseMode;
+	transactions: SyncTransactionOutcome[];
 	applied: SyncOutcome[];
 	items: ServerItem[];
 }

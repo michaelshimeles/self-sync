@@ -3,15 +3,21 @@ import { liveQuery } from 'dexie';
 import { derived, readable, writable } from 'svelte/store';
 import { getClientId } from './identity';
 import { db } from './local-db';
+import {
+	runLocalTransaction,
+	type ItemPatch,
+	type LocalTransactionContext,
+	type LocalTransactionResult
+} from './local-transaction';
 import type {
-	ClientSyncItem,
 	KanbanStage,
 	LocalItem,
-	MutationOperation,
 	OutboxMutation,
 	RealtimeActivity,
 	SyncActivity
 } from '$lib/shared/types';
+
+export type { ItemPatch, LocalTransactionContext, LocalTransactionResult } from './local-transaction';
 
 function dexieReadable<T>(query: () => Promise<T>, initialValue: T) {
 	if (!browser) return readable(initialValue);
@@ -90,99 +96,30 @@ export const localSummary = derived(
 	})
 );
 
-function toSyncItem(item: LocalItem): ClientSyncItem {
-	return {
-		id: item.id,
-		name: item.name,
-		note: item.note,
-		stage: item.stage ?? 'todo',
-		updatedAt: item.updatedAt,
-		deletedAt: item.deletedAt
-	};
-}
-
-function createMutation(op: MutationOperation, item: LocalItem): OutboxMutation {
-	return {
-		id: crypto.randomUUID(),
-		itemId: item.id,
-		op,
-		item: toSyncItem(item),
-		createdAt: Date.now(),
-		attempts: 0,
-		lastError: null
-	};
-}
-
-async function putLocalChange(item: LocalItem, op: MutationOperation) {
-	const mutation = createMutation(op, item);
-
-	await db.transaction('rw', db.items, db.outbox, async () => {
-		await db.items.put(item);
-		await db.outbox.where('itemId').equals(item.id).delete();
-		await db.outbox.add(mutation);
-	});
+export async function localTransaction<T>(
+	handler: (transaction: LocalTransactionContext) => T | Promise<T>
+): Promise<LocalTransactionResult<T>> {
+	return runLocalTransaction({ db, clientId: getClientId() }, handler);
 }
 
 export async function addLocalItem(input: { name: string; note: string; stage?: KanbanStage }) {
-	const now = Date.now();
 	const name = input.name.trim();
-	const note = input.note.trim();
-
 	if (!name) return;
 
-	const item: LocalItem = {
-		id: crypto.randomUUID(),
-		name,
-		note,
-		stage: input.stage ?? 'todo',
-		revision: 0,
-		updatedAt: now,
-		deletedAt: null,
-		sourceClientId: getClientId(),
-		syncStatus: 'pending',
-		lastError: null
-	};
-
-	await putLocalChange(item, 'upsert');
+	const result = await localTransaction((transaction) =>
+		transaction.insert({ ...input, name })
+	);
+	return result.value;
 }
 
-export async function updateLocalItem(
-	id: string,
-	patch: Partial<Pick<LocalItem, 'name' | 'note' | 'stage'>>
-) {
-	const existing = await db.items.get(id);
-	if (!existing || existing.deletedAt !== null) return;
-
-	const item: LocalItem = {
-		...existing,
-		...patch,
-		name: patch.name ?? existing.name,
-		note: patch.note ?? existing.note,
-		stage: patch.stage ?? existing.stage ?? 'todo',
-		updatedAt: Date.now(),
-		sourceClientId: getClientId(),
-		syncStatus: 'pending',
-		lastError: null
-	};
-
-	await putLocalChange(item, 'upsert');
+export async function updateLocalItem(id: string, patch: ItemPatch) {
+	const result = await localTransaction((transaction) => transaction.patch(id, patch));
+	return result.value;
 }
 
 export async function deleteLocalItem(id: string) {
-	const existing = await db.items.get(id);
-	if (!existing) return;
-
-	const now = Date.now();
-	const item: LocalItem = {
-		...existing,
-		updatedAt: now,
-		deletedAt: now,
-		sourceClientId: getClientId(),
-		syncStatus: 'pending',
-		lastError: null
-	};
-
-	await putLocalChange(item, 'delete');
+	const result = await localTransaction((transaction) => transaction.delete(id));
+	return result.value;
 }
 
 export async function markOutboxFailed(message: string) {
